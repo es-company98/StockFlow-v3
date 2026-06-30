@@ -1,0 +1,84 @@
+// StockFlow — règles Firestore (générales)
+// Prérequis manuel : system/meta → { usersCount: 0, maxUsers: 5 }
+// Déployer : Firebase Console → Firestore → Règles → Publier
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    function underUserLimit() {
+      return exists(/databases/$(database)/documents/system/meta)
+        && get(/databases/$(database)/documents/system/meta).data.usersCount
+           < get(/databases/$(database)/documents/system/meta).data.maxUsers;
+    }
+
+    // ── Limite 5 users ─────────────────────────────────────────
+    match /system/meta {
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && request.resource.data.maxUsers == 5
+        && request.resource.data.usersCount == 0;
+
+      allow update: if signedIn()
+        && request.resource.data.maxUsers == 5
+        && (
+          request.resource.data.usersCount == resource.data.usersCount + 1
+          || request.resource.data.usersCount == resource.data.usersCount - 1
+          || isAdmin()
+        );
+    }
+
+    // ── Users (signup.js crée le doc — rôle géré par le JS) ────
+    match /users/{userId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && request.auth.uid == userId
+        && underUserLimit();
+
+      allow update: if signedIn()
+        && (request.auth.uid == userId || isAdmin());
+
+      allow delete: if isAdmin();
+    }
+
+    // ── Collections métier ─────────────────────────────────────
+    match /products/{id}         { allow read, write: if signedIn(); }
+    match /sales/{id}            { allow read, write: if signedIn(); }
+    match /sale_items/{id}       { allow read, write: if signedIn(); }
+    match /stock_movements/{id}  { allow read, write: if signedIn(); }
+    match /purchases/{id}        { allow read, write: if signedIn(); }
+    match /purchase_items/{id}   { allow read, write: if signedIn(); }
+    match /expenses/{id}         { allow read, write: if signedIn(); }
+    match /debts/{id}            { allow read, write: if signedIn(); }
+    match /losses/{id}           { allow read, write: if signedIn(); }
+    match /logs/{id}             { allow read, write: if signedIn(); }
+
+    // ── Config (écriture admin) ────────────────────────────────
+    match /appConfig/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /settings/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // ── Sous-collections (ne bloque pas products/{id}/...) ───────
+    match /{col}/{docId}/{path=**} {
+      allow read, write: if signedIn();
+    }
+  }
+}

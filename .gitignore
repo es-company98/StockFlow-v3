@@ -1,0 +1,4 @@
+.cursor/
+*.log
+.DS_Store
+Thumbs.db
