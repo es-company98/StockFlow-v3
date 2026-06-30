@@ -10,6 +10,7 @@ import {
 } from "./firebase.js";
 
 import { auth, onAuthStateChanged } from "./auth.js";
+import { getAppConfig } from "./appConfig.js";
 
 const $ = id => document.getElementById(id);
 
@@ -28,6 +29,10 @@ let metaLoaded = false;
 
 function n(v) {
   return Number(v) || 0;
+}
+
+function formatMoney(v) {
+  return `${Math.round(n(v)).toLocaleString()} ${state.currency}`;
 }
 
 function getDate(v) {
@@ -190,6 +195,9 @@ function updateDateLimits() {
 }
 
 async function loadMetaData() {
+  const config = await getAppConfig();
+  state.currency = config?.currencySymbol || config?.currency || "$";
+
   if (metaLoaded) {
     return;
   }
@@ -237,10 +245,10 @@ function populateFilterOptions() {
       .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
       .forEach(product => {
         const option = document.createElement("option");
-        option.value = product.id;
+      option.value = product.id;
         option.textContent = product.name || "Produit";
-        productFilter.appendChild(option);
-      });
+      productFilter.appendChild(option);
+    });
 
     productFilter.value = current;
   }
@@ -262,8 +270,8 @@ function populateFilterOptions() {
         const option = document.createElement("option");
         option.value = user.userId || user.uid || user.id;
         option.textContent = user.name || "Vendeur";
-        sellerFilter.appendChild(option);
-      });
+      sellerFilter.appendChild(option);
+    });
 
     if (currentUser?.role === "seller") {
       const ownId =
@@ -402,8 +410,13 @@ function buildRows() {
       sellerName: seller?.name || "Vendeur",
       quantity: n(item.quantity),
       price: n(item.price),
+      profit: n(item.profit),
       total: n(item.quantity) * n(item.price),
-      clientName: debt?.name || "",
+      clientName:
+        sale.clientName ||
+        sale.client_name ||
+        debt?.name ||
+        "",
       paymentStatus: sale.payment_status || "paid",
       saleStatus: sale.status || "active",
       amountRemaining: n(debt?.amount_remaining),
@@ -418,23 +431,38 @@ function buildRows() {
   });
 }
 
+function getFilteredRows() {
+  const search = ($("clientSearch")?.value || "").trim().toLowerCase();
+
+  if (!search) {
+    return state.rows;
+  }
+
+  return state.rows.filter(row =>
+    (row.clientName || "").toLowerCase().includes(search)
+  );
+}
+
 function renderKpis(rows) {
-  const soldCount = rows.reduce(
+  const activeRows = rows.filter(row => row.saleStatus !== "cancelled");
+
+  const soldCount = activeRows.reduce(
     (sum, row) => sum + row.quantity,
     0
   );
 
-  const salesTotal = rows.reduce(
+  const salesTotal = activeRows.reduce(
     (sum, row) => sum + row.total,
     0
   );
 
-  const clients = new Set(
-    rows.map(r => r.clientName).filter(Boolean)
+  const netProfit = activeRows.reduce(
+    (sum, row) => sum + row.profit,
+    0
   );
 
   const debtBySale = new Map();
-  rows.forEach(row => {
+  activeRows.forEach(row => {
     if (row.paymentStatus === "partial" && row.amountRemaining > 0) {
       debtBySale.set(row.saleId, row.amountRemaining);
     }
@@ -445,12 +473,10 @@ function renderKpis(rows) {
     0
   );
 
-  const currency = state.currency || "$";
-
   $("soldCount").textContent = String(soldCount);
-  $("salesTotal").textContent = `${salesTotal.toLocaleString()} ${currency}`;
-  $("clientsCount").textContent = String(clients.size);
-  $("debtTotal").textContent = `${debtTotal.toLocaleString()} ${currency}`;
+  $("salesTotal").textContent = formatMoney(salesTotal);
+  $("netProfit").textContent = formatMoney(netProfit);
+  $("debtTotal").textContent = formatMoney(debtTotal);
   $("resultCount").textContent = String(rows.length);
 }
 
@@ -471,7 +497,7 @@ function createSaleCard(row) {
 
   const price = document.createElement("div");
   price.className = "sale-price";
-  price.textContent = `${row.total.toLocaleString()} ${state.currency}`;
+  price.textContent = formatMoney(row.total);
 
   top.appendChild(product);
   top.appendChild(price);
@@ -486,7 +512,7 @@ function createSaleCard(row) {
 
   const qtyMeta = document.createElement("div");
   qtyMeta.className = "sale-meta";
-  qtyMeta.textContent = `Qté : ${row.quantity} × ${row.price.toLocaleString()}`;
+  qtyMeta.textContent = `Qté : ${row.quantity} × ${formatMoney(row.price)}`;
 
   const dateMeta = document.createElement("div");
   dateMeta.className = "sale-meta";
@@ -509,7 +535,7 @@ function createSaleCard(row) {
     badge.textContent = "Annulée";
   } else if (row.paymentStatus === "partial") {
     badge.classList.add("badge-partial");
-    badge.textContent = `Dette • ${row.amountRemaining.toLocaleString()} FC`;
+    badge.textContent = `Dette • ${formatMoney(row.amountRemaining)}`;
   } else {
     badge.classList.add("badge-paid");
     badge.textContent = "Payé";
@@ -526,7 +552,7 @@ function createSaleCard(row) {
 }
 
 function render() {
-  const rows = state.rows;
+  const rows = getFilteredRows();
 
   renderKpis(rows);
 
@@ -555,6 +581,7 @@ function resetFilters() {
   $("productFilter").value = "";
   $("paymentFilter").value = "";
   $("statusFilter").value = "";
+  $("clientSearch").value = "";
   $("statsRange").value = "today";
   $("dateFrom").value = "";
   $("dateTo").value = "";
@@ -614,6 +641,10 @@ function bindEvents() {
     loadData();
   });
 
+  $("clientSearch")?.addEventListener("input", () => {
+    render();
+  });
+
   $("resetBtn")?.addEventListener("click", resetFilters);
 
   const custom = $("statsRange")?.value === "custom";
@@ -626,14 +657,14 @@ function bindEvents() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  onAuthStateChanged(auth, async user => {
+onAuthStateChanged(auth, async user => {
     if (!user) {
-      location.replace("404.html");
-      return;
-    }
+    location.replace("404.html");
+    return;
+  }
 
     try {
-      await checkAccess(user.uid);
+  await checkAccess(user.uid);
     } catch (error) {
       console.error(error);
       location.replace("404.html");

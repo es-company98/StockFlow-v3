@@ -812,6 +812,7 @@ async function processSaleOnline(data) {
 
   tx.set(saleRef, {
   sellerId: finalSellerId,
+  clientName: name,
   total_amount: totalAmount,
   total_profit: totalProfit,
   offlineActionId: offlineActionId || null,
