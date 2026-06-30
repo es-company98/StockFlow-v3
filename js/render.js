@@ -16,6 +16,40 @@ function setText(id, text) {
   }
 }
 
+function getPurchaseTotal(purchase) {
+  const fromDoc = n(purchase?.total_cost ?? purchase?.totalCost ?? purchase?.total);
+  if (fromDoc > 0) {
+    return fromDoc;
+  }
+
+  const purchaseId = purchase?.id;
+  if (!purchaseId) {
+    return 0;
+  }
+
+  return state.purchaseItems
+    .filter(i => (i.purchaseId || i.purchase_id) === purchaseId)
+    .reduce(
+      (sum, i) =>
+        sum + n(i.quantity) * n(i.price ?? i.unitPrice ?? i.purchase_price),
+      0
+    );
+}
+
+function resolveSellerName(sellerId) {
+  if (!sellerId || sellerId === "__unknown__") {
+    return "Vendeur inconnu";
+  }
+
+  const user = state.users.find(u =>
+    u.userId === sellerId ||
+    u.uid === sellerId ||
+    u.id === sellerId
+  );
+
+  return user?.name || sellerId;
+}
+
 export async function render(chartApi) {
   const sales = state.sales;
   const expenses = state.expenses;
@@ -107,7 +141,10 @@ function renderFinancialHealth(sales, expenses, losses) {
     sales.reduce((s, v) => s + n(v.amount_paid), 0);
 
   const purchaseTotal =
-    state.purchases.reduce((s, p) => s + n(p.total_cost), 0);
+    state.purchases.reduce(
+      (s, p) => s + getPurchaseTotal(p),
+      0
+    );
 
   const grossProfit =
     state.saleItems.reduce((s, i) => s + n(i.profit), 0);
@@ -138,10 +175,7 @@ function renderStockHealth() {
     }, 0);
 
   const blockedStock =
-    state.products.filter(p =>
-      p.offlineBlocked === true ||
-      n(p.stock_current) <= n(p.minOfflineStock || 0)
-    ).length;
+    state.products.filter(p => p.offlineBlocked === true).length;
 
   const stockOut =
     state.products.filter(p =>
@@ -173,14 +207,14 @@ function renderDebts() {
   }
 
   const debts =
-    (state.debts || [])
-      .filter(debt => debt && debt.status !== "cancelled")
-      .sort(
-        (a, b) =>
-          n(b.amount_remaining) -
-          n(a.amount_remaining)
-      )
-      .slice(0, 10);
+    (state.recentDebts || [])
+      .filter(
+        debt =>
+          debt &&
+          debt.status !== "cancelled" &&
+          debt.status !== "paid" &&
+          n(debt.amount_remaining) > 0
+      );
 
   debts.forEach(debt => {
     const item = document.createElement("div");
@@ -233,12 +267,7 @@ function renderPurchases() {
   const box = $("purchaseList");
   if (!box) return;
 
-  const list =
-    [...state.purchases]
-      .sort((a, b) =>
-        getDate(b.createdAt) - getDate(a.createdAt)
-      )
-      .slice(0, 10);
+  const list = state.recentPurchases || [];
 
   list.forEach(p => {
     const item = document.createElement("div");
@@ -258,7 +287,7 @@ function renderPurchases() {
 
     const value = document.createElement("div");
     value.className = "activity-price";
-    value.textContent = formatMoney(p.total_cost);
+    value.textContent = formatMoney(getPurchaseTotal(p));
 
     left.appendChild(title);
     left.appendChild(meta);
@@ -268,6 +297,13 @@ function renderPurchases() {
 
     box.appendChild(item);
   });
+
+  if (list.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "Aucun achat sur cette période";
+    box.appendChild(empty);
+  }
 }
 
 function renderKPIs(
@@ -318,30 +354,36 @@ function renderKPIs(
       ? (grossProfit / totalSales) * 100
       : 0;
 
-  const prevSalesTotal =
-    previousSales.reduce(
-      (sum, s) => sum + n(s.total_amount),
-      0
-    );
-
-  const previousSaleIds =
-    new Set(previousSales.map(s => s.id));
+  const previousSaleIds = new Set(previousSales.map(s => s.id));
 
   const previousItems =
     state.saleItems.filter(i => previousSaleIds.has(i.saleId));
 
-  const prevProfitTotal =
+  const prevSalesTotal =
+    previousItems.reduce(
+      (sum, i) => sum + n(i.price) * n(i.quantity),
+      0
+    );
+
+  const prevGrossProfit =
     previousItems.reduce(
       (sum, i) => sum + n(i.profit),
       0
-    ) -
+    );
+
+  const prevExpensesTotal =
     previousExpenses.reduce(
       (sum, e) => sum + n(e.amount),
       0
-    ) -
+    );
+
+  const prevLossesTotal =
     previousLosses
       .filter(e => e.isSystemCorrection !== true && e.status !== "cancelled")
       .reduce((sum, e) => sum + n(e.amount), 0);
+
+  const prevProfitTotal =
+    prevGrossProfit - prevExpensesTotal - prevLossesTotal;
 
   const prevBasket =
     previousSales.length
@@ -350,11 +392,16 @@ function renderKPIs(
 
   const prevMargin =
     prevSalesTotal > 0
-      ? (prevProfitTotal / prevSalesTotal) * 100
+      ? (prevGrossProfit / prevSalesTotal) * 100
       : 0;
 
   const calcTrend = (current, previous) => {
-    if (!previous || previous <= 0) return current > 0 ? 100 : 0;
+    if (previous === null || previous === undefined) {
+      return null;
+    }
+    if (previous <= 0) {
+      return current > 0 ? null : 0;
+    }
     return ((current - previous) / previous) * 100;
   };
 
@@ -371,6 +418,12 @@ function renderKPIs(
   const updateTrend = (id, value) => {
     const el = $(id);
     if (!el) return;
+
+    if (value === null) {
+      el.textContent = "—";
+      el.className = "kpi-trend";
+      return;
+    }
 
     const v = n(value);
     const positive = v >= 0;
@@ -540,15 +593,9 @@ function renderSellers(sales, saleItems) {
   const boxWeak = $("weakSellerList");
   if (!boxTop || !boxWeak) return;
 
+  const SELLER_SHARE_THRESHOLD = 30;
   const map = {};
-
-  state.users.forEach(u => {
-    const id = u.userId || u.id;
-    map[id] = { amount: 0, count: 0 };
-  });
-
   const UNKNOWN = "__unknown__";
-  map[UNKNOWN] = { amount: 0, count: 0 };
 
   const itemsBySale = {};
 
@@ -560,44 +607,55 @@ function renderSellers(sales, saleItems) {
   sales.forEach(s => {
     const sellerId = s.sellerId || UNKNOWN;
     const saleKey = s.saleId || s.id;
-
     const items = itemsBySale[saleKey] || [];
 
-    let saleTotal = 0;
-    let saleCount = 0;
-
-    items.forEach(i => {
-      saleTotal += n(i.price) * n(i.quantity);
-      saleCount += n(i.quantity);
-    });
-
     if (!map[sellerId]) {
-      map[sellerId] = { amount: 0, count: 0 };
+      map[sellerId] = { amount: 0, saleCount: 0, unitCount: 0 };
     }
 
-    map[sellerId].amount += saleTotal;
-    map[sellerId].count += saleCount;
+    map[sellerId].saleCount += 1;
+
+    items.forEach(i => {
+      map[sellerId].amount += n(i.price) * n(i.quantity);
+      map[sellerId].unitCount += n(i.quantity);
+    });
   });
 
-  const entries = Object.entries(map);
+  const totalSaleCount = sales.length;
 
-  const sortedTop =
-    [...entries]
-      .sort((a, b) => b[1].amount - a[1].amount)
-      .slice(0, 5);
+  const appendEmpty = (box, message) => {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = message;
+    box.appendChild(empty);
+  };
 
-  const sortedWeak =
-    [...entries]
-      .sort((a, b) => a[1].amount - b[1].amount)
-      .slice(0, 5);
+  if (totalSaleCount === 0) {
+    appendEmpty(boxTop, "Aucune vente sur cette période");
+    appendEmpty(boxWeak, "Aucun vendeur à comparer");
+    return;
+  }
+
+  const ranked = Object.entries(map)
+    .filter(([, v]) => v.saleCount > 0)
+    .map(([id, v]) => ({
+      id,
+      v,
+      share: (v.saleCount / totalSaleCount) * 100
+    }));
+
+  const topSellers = ranked
+    .filter(entry => entry.share >= SELLER_SHARE_THRESHOLD)
+    .sort((a, b) => b.share - a.share)
+    .slice(0, 5);
+
+  const weakSellers = ranked
+    .filter(entry => entry.share < SELLER_SHARE_THRESHOLD)
+    .sort((a, b) => a.share - b.share)
+    .slice(0, 5);
 
   const renderList = (box, data, badge = null) => {
-    data.forEach(([id, v]) => {
-      const user =
-        state.users.find(u =>
-          (u.userId || u.id) === id
-        );
-
+    data.forEach(({ id, v, share }) => {
       const el = document.createElement("div");
       el.className = "list-item";
 
@@ -606,11 +664,12 @@ function renderSellers(sales, saleItems) {
 
       const title = document.createElement("div");
       title.className = "list-title";
-      title.textContent = user?.name || id;
+      title.textContent = resolveSellerName(id);
 
       const sub = document.createElement("div");
       sub.className = "list-sub";
-      sub.textContent = `${v.count} unités vendues`;
+      sub.textContent =
+        `${v.saleCount} vente(s) • ${share.toFixed(1)}% du total`;
 
       const value = document.createElement("div");
       value.className = "list-value";
@@ -633,8 +692,17 @@ function renderSellers(sales, saleItems) {
     });
   };
 
-  renderList(boxTop, sortedTop, "badge-green");
-  renderList(boxWeak, sortedWeak, "badge-orange");
+  if (topSellers.length === 0) {
+    appendEmpty(boxTop, `Aucun vendeur ≥ ${SELLER_SHARE_THRESHOLD}% des ventes`);
+  } else {
+    renderList(boxTop, topSellers, "badge-green");
+  }
+
+  if (weakSellers.length === 0) {
+    appendEmpty(boxWeak, `Aucun vendeur < ${SELLER_SHARE_THRESHOLD}% des ventes`);
+  } else {
+    renderList(boxWeak, weakSellers, "badge-orange");
+  }
 }
 
 function renderAlerts() {
@@ -725,11 +793,7 @@ function renderActivity() {
 
   clearNode("recentActivityList");
 
-  const movements = [...state.stockMovements]
-    .sort((a, b) =>
-      getDate(b.createdAt) - getDate(a.createdAt)
-    )
-    .slice(0, 10);
+  const movements = state.recentStockMovements || [];
 
   movements.forEach(m => {
     const el = document.createElement("div");
@@ -774,4 +838,11 @@ function renderActivity() {
 
     box.appendChild(el);
   });
+
+  if (movements.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "Aucune activité sur cette période";
+    box.appendChild(empty);
+  }
 }

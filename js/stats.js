@@ -9,7 +9,8 @@ import {
   getDocs,
   query,
   where,
-  orderBy
+  orderBy,
+  limit
 } from "./firebase.js";
 import { auth, onAuthStateChanged } from "./auth.js";
 import { getAppConfig } from "./appConfig.js";
@@ -17,19 +18,24 @@ import { getAppConfig } from "./appConfig.js";
 export const $ = id => document.getElementById(id);
 export const n = v => Number(v) || 0;
 
+const STATS_LIST_LIMIT = 10;
+
 let chartApi = null;
 
 export const state = {
   saleItems: [],
   purchases: [],
   purchaseItems: [],
+  recentPurchases: [],
   sales: [],
   expenses: [],
   debts: [],
+  recentDebts: [],
   losses: [],
   products: [],
   users: [],
   stockMovements: [],
+  recentStockMovements: [],
   currency: "$",
   config: null,
   chartReady: false
@@ -203,6 +209,37 @@ function buildCollectionQuery(collectionName) {
   return query(collection(db, collectionName), ...constraints);
 }
 
+function buildRecentListQuery(collectionName) {
+  const { start, end } = buildDateRange();
+  const constraints = [];
+
+  if (start) {
+    constraints.push(where("createdAt", ">=", start));
+  }
+
+  if (end) {
+    constraints.push(where("createdAt", "<=", end));
+  }
+
+  constraints.push(orderBy("createdAt", "desc"));
+  constraints.push(limit(STATS_LIST_LIMIT));
+
+  return query(collection(db, collectionName), ...constraints);
+}
+
+function buildOpenDebtsQuery(listOnly = false) {
+  const constraints = [
+    where("amount_remaining", ">", 0),
+    orderBy("amount_remaining", "desc")
+  ];
+
+  if (listOnly) {
+    constraints.push(limit(STATS_LIST_LIMIT));
+  }
+
+  return query(collection(db, "debts"), ...constraints);
+}
+
 export function formatMoney(v) {
   return `${Math.round(n(v)).toLocaleString()} ${state.currency}`;
 }
@@ -226,45 +263,60 @@ async function loadData() {
     const expensesQuery = buildCollectionQuery("expenses");
     const lossesQuery = buildCollectionQuery("losses");
     const purchasesQuery = buildCollectionQuery("purchases");
+    const recentPurchasesQuery = buildRecentListQuery("purchases");
     const stockQuery = buildCollectionQuery("stock_movements");
-    const allDebtsQuery = query(
-      collection(db, "debts"),
-      orderBy("createdAt", "desc")
-    );
+    const recentStockQuery = buildRecentListQuery("stock_movements");
+    const openDebtsQuery = buildOpenDebtsQuery(false);
+    const recentDebtsQuery = buildOpenDebtsQuery(true);
 
     const [
       salesSnap,
       expensesSnap,
       debtsSnap,
+      recentDebtsSnap,
       lossesSnap,
       productsSnap,
       usersSnap,
       stockSnap,
+      recentStockSnap,
       saleItemsSnap,
       purchasesSnap,
+      recentPurchasesSnap,
       purchaseItemsSnap
     ] = await Promise.all([
       getDocs(salesQuery),
       getDocs(expensesQuery),
-      getDocs(allDebtsQuery),
+      getDocs(openDebtsQuery),
+      getDocs(recentDebtsQuery),
       getDocs(lossesQuery),
       getDocs(collection(db, "products")),
       getDocs(collection(db, "users")),
       getDocs(stockQuery),
+      getDocs(recentStockQuery),
       getDocs(collection(db, "sale_items")),
       getDocs(purchasesQuery),
+      getDocs(recentPurchasesQuery),
       getDocs(collection(db, "purchase_items"))
     ]);
 
     state.sales = salesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     state.expenses = expensesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     state.debts = debtsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    state.recentDebts = recentDebtsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     state.losses = lossesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     state.products = productsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     state.users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     state.stockMovements = stockSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    state.recentStockMovements = recentStockSnap.docs.map(d => ({
+      id: d.id,
+      ...d.data()
+    }));
     state.saleItems = saleItemsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     state.purchases = purchasesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    state.recentPurchases = recentPurchasesSnap.docs.map(d => ({
+      id: d.id,
+      ...d.data()
+    }));
     state.purchaseItems = purchaseItemsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
     populateSellerFilter();
@@ -398,6 +450,49 @@ export async function loadPreviousPeriodData() {
   };
 }
 
+function formatFilterDate(date) {
+  if (!date || !(date instanceof Date) || isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleDateString("fr-FR");
+}
+
+function getStatsFilterLabel() {
+  const range = $("statsRange")?.value || "30days";
+  const { start, end } = buildDateRange();
+  const seller = $("sellerFilter")?.value || "all";
+
+  const rangeLabels = {
+    today: "Aujourd'hui",
+    yesterday: "Hier",
+    "7days": "7 derniers jours",
+    "30days": "30 derniers jours",
+    month: "Ce mois",
+    year: "Cette année",
+    custom: "Personnalisé"
+  };
+
+  let periodLabel = rangeLabels[range] || range;
+
+  if (start && end) {
+    periodLabel += ` (${formatFilterDate(start)} → ${formatFilterDate(end)})`;
+  }
+
+  let sellerLabel = "Tous les vendeurs";
+  if (seller !== "all") {
+    const user = state.users.find(u =>
+      (u.userId || u.uid || u.id) === seller
+    );
+    sellerLabel = user?.name || seller;
+  }
+
+  return {
+    period: periodLabel,
+    seller: sellerLabel,
+    summary: `Période : ${periodLabel} • Vendeur : ${sellerLabel}`
+  };
+}
+
 function buildPdfPayload() {
   const sales = state.sales;
   const expenses = state.expenses;
@@ -483,6 +578,8 @@ function buildPdfPayload() {
     };
   });
 
+  const filterInfo = getStatsFilterLabel();
+
   return {
     meta: {
       shopName: state.config?.shopName || "StockFlow",
@@ -491,7 +588,10 @@ function buildPdfPayload() {
       currency: state.currency,
       currencySymbol: state.config?.currencySymbol || state.currency || "$",
       logoUrl: state.config?.logoUrl || "shopLogo.png",
-      generatedAt: new Date().toISOString()
+      generatedAt: new Date().toISOString(),
+      filterPeriod: filterInfo.period,
+      filterSeller: filterInfo.seller,
+      filterSummary: filterInfo.summary
     },
     kpis: {
       totalSales,

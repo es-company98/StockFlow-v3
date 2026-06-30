@@ -140,7 +140,7 @@ export function exportStatsPdf() {
     doc.setFont("helvetica", "bold");
     doc.setFontSize(16);
 
-    doc.text("StockFlow ERP • Business Report", 38, 14);
+    doc.text("StockFlow • Business Report", 38, 14);
 
     doc.setFontSize(9);
     doc.setFont("helvetica", "normal");
@@ -149,7 +149,14 @@ export function exportStatsPdf() {
     doc.text(`Currency: ${currency}`, 38, 25);
     doc.text(`Generated: ${new Date(data.meta.generatedAt).toLocaleString()}`, 38, 30);
 
-    doc.line(15, 34, 195, 34);
+    const filterLine = data.meta.filterSummary || data.meta.filterPeriod || "";
+    if (filterLine) {
+      doc.setFont("helvetica", "bold");
+      doc.text(String(filterLine).substring(0, 90), 38, 35);
+      doc.setFont("helvetica", "normal");
+    }
+
+    doc.line(15, 38, 195, 38);
 
     if (withLogo && !logoDrawn && data.meta.logoUrl) {
       const img = await loadImage(data.meta.logoUrl);
@@ -159,7 +166,7 @@ export function exportStatsPdf() {
       }
     }
 
-    y = 45;
+    y = 46;
   }
 
   function section(title) {
@@ -265,11 +272,9 @@ export function exportStatsPdf() {
     doc.setFont("helvetica", "italic");
     const footerName = data.meta.shopName || "StockFlow";
 
-doc.setFontSize(9);
-doc.setFont("helvetica", "italic");
-doc.text(`${footerName} ERP • Confidential Business Report`, 15, 290);
+    doc.text(`${footerName} • Confidential Business Report`, 15, 290);
 
-doc.save(`${footerName.toLowerCase().replace(/\s+/g, "-")}-erp-report.pdf`);
+    doc.save(`${footerName.toLowerCase().replace(/\s+/g, "-")}-stats-report.pdf`);
 
   })();
 }
