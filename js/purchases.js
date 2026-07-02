@@ -100,15 +100,46 @@ async function loadProductMovements(productId) {
   return snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
-const toggleBtn = document.querySelector('.commande button');
+const toggleBtn = document.getElementById("addPurchaseBtn");
+
+function closePurchaseForm() {
+  if (!purchaseForm) return;
+
+  purchaseForm.reset();
+  purchaseForm.classList.remove("purchase-overlay");
+  purchaseForm.style.display = "none";
+  syncPurchaseExpirationField();
+}
+
+function openPurchaseForm() {
+  if (!purchaseForm) return;
+
+  purchaseForm.style.display = "flex";
+  purchaseForm.classList.add("purchase-overlay");
+  syncPurchaseExpirationField();
+  document.getElementById("supplierName")?.focus();
+}
 
 if (toggleBtn) {
+  toggleBtn.addEventListener("click", () => {
+    const isHidden =
+      getComputedStyle(purchaseForm).display === "none";
 
-  toggleBtn.addEventListener('click', () => {
-  const f = purchaseForm;
-  f.style.display = (getComputedStyle(f).display === "none") ? "flex" : "none";
-});
+    if (isHidden) {
+      openPurchaseForm();
+    } else {
+      closePurchaseForm();
+    }
+  });
 }
+
+document.getElementById("purchaseCancelBtn")?.addEventListener("click", () => {
+  closePurchaseForm();
+});
+
+document.getElementById("purchaseFormCloseBtn")?.addEventListener("click", () => {
+  closePurchaseForm();
+});
 
 // --- COLLECTIONS ---
 const purchasesCol = collection(db, 'purchases');
@@ -548,6 +579,8 @@ if (purchaseForm) {
 
         purchaseForm.reset();
 
+        closePurchaseForm();
+
         return;
 
       }
@@ -567,9 +600,7 @@ if (purchaseForm) {
 
       debug("✅ Achat enregistré");
 
-      purchaseForm.reset();
-      purchaseForm.classList.remove("purchase-overlay");
-purchaseForm.style.display = "none";
+      closePurchaseForm();
 
       await loadStock();
 
@@ -775,19 +806,10 @@ actionTd.appendChild(btn);
 // ---  auto form ---
 function openPurchaseForProduct(product) {
 
-  purchaseForm.style.display = "flex";
+  openPurchaseForm();
 
   productSelect.value = product.id;
   syncPurchaseExpirationField();
-
-  purchaseForm.classList.add("purchase-overlay");
-
-  const supplierInput =
-    document.getElementById("supplierName");
-
-  if (supplierInput) {
-    supplierInput.focus();
-  }
 
   window.scrollTo({
     top: 0,
